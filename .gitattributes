@@ -1,0 +1,2 @@
+# Keep the files byte-identical (CRLF): NinjaTrader duplicates its generated-code region in LF files.
+*.cs -text

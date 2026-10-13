@@ -1,0 +1,6 @@
+# Only the own price-action indicators are versioned; NinjaTrader system and other indicators stay out.
+*
+!.gitignore
+!.gitattributes
+!EntryCount.cs
+!DoubleTrap.cs
