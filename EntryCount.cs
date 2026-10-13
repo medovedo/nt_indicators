@@ -582,6 +582,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 			public int F2ArmBar;
 			public double F2RunExtreme;        // highest high (long) / lowest low (short) since the 2E trigger
 			public int F2RunExtremeBar;
+
+			public bool Paused;                // tuning EC-11/EC-13: count paused until a close on its side of the EMA
+			public double F2OriginPrice;       // tuning EC-12: origin of the count the 2E came from
 		}
 
 		#endregion
@@ -702,12 +705,17 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 				// Counting / reset
 				RequireEqualOrHigherLeg     = false;
-				ResetOnKeyLevel             = true;
+				ResetOnKeyLevel             = false;    // tuning CHANGELOG Nr. 6 (C# before: true)
 				ResetScope                  = EntryCountResetScope.CounterTrendOnly;
 				ResetAfterTwoLegs           = true;
 				ResetOnNewExtreme           = true;
 				FailedEntryMode             = EntryCountFailedEntryMode.PriorBarBreak;
 				InsideBarAsSignal           = true;
+
+				// Tuning (CHANGELOG_Tuning.md; DoubleTrap switches them off for its hosted instance)
+				PauseCountAfterCounterTrendF2E = false; // EC-11, Nr. 1/2 (replaced by EC-13)
+				F2EWatchUntil2EOrigin       = true;     // EC-12, Nr. 5
+				CountOnlyFromEmaSide        = true;     // EC-13, Nr. 7
 
 				// Display
 				ShowLabels                  = true;
@@ -928,6 +936,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 			UpdateF2RunExtreme(longState);
 			UpdateF2RunExtreme(shortState);
 
+			EndPause(longState);        // tuning EC-11/EC-13
+			EndPause(shortState);
+
 			ApplyKeyLevelReset(longState, keyContact);
 			ApplyKeyLevelReset(shortState, keyContact);
 
@@ -1047,6 +1058,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 			diag.Context.ShortInLeg          = shortState.InLeg;
 			diag.Context.ShortCandidateBarNo = barNumbering.Get(shortState.Candidate.Index);
 			diag.Context.ShortOriginBarNo    = barNumbering.Get(shortState.OriginBar);
+			if (longState.Paused)
+				diag.Context.LongStateText = "Paused";
+			if (shortState.Paused)
+				diag.Context.ShortStateText = "Paused";
 
 			if (ExportCsv && CsvIncludeBars)
 				diag.WriteCsv(tradingDay, diag.FormatBar());
@@ -1064,6 +1079,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 			c.OriginBar    = CurrentBar;
 			c.HasPrevLeg   = false;
 			c.F2Armed      = false;
+			PauseNewCountBeyondEma(c);      // tuning EC-13
 		}
 
 		private bool LegMove(CountState c)    { return c.IsLong ? currentDown : currentUp; }
@@ -1077,6 +1093,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 		private void RunMachine(CountState c)
 		{
+			if (c.Paused)                   // tuning EC-11/EC-13
+				return;
 			if (!c.InLeg)
 			{
 				// Pullback (or waiting at the origin): a bar breaking the reference bar in leg direction starts a new leg.
@@ -1117,7 +1135,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 		/// </summary>
 		private void TakeInsideBarAsCandidate(CountState c)
 		{
-			if (c.InLeg)
+			if (c.InLeg && !c.Paused)       // tuning EC-11/EC-13: no candidate while paused
 				c.Candidate = currentSnap;
 		}
 
@@ -1162,6 +1180,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 			{
 				c.F2Armed         = true;
 				c.F2Level         = c.IsLong ? sig.Low : sig.High;
+				c.F2OriginPrice   = c.OriginPrice;      // tuning EC-12
 				c.F2ArmBar        = CurrentBar;
 				c.F2RunExtreme    = c.IsLong ? High[0] : Low[0];
 				c.F2RunExtremeBar = CurrentBar;
@@ -1251,14 +1270,22 @@ namespace NinjaTrader.NinjaScript.Indicators
 			// ASSUMPTION: "completed 2E/F2E" means the F2E event; a successful 2E keeps counting (3E...).
 			if (ResetAfterTwoLegs)
 				ResetCount(c, EntryCountResetReason.TwoLegs, c.F2RunExtreme, c.F2RunExtremeBar);
+
+			StartPause(c);                  // tuning EC-11/EC-13
 		}
 
 		private void ApplyExtremeAndKeyLevelResets(CountState c, bool keyContact)
 		{
+			if (c.Paused)                   // tuning EC-11/EC-13: no resets while paused
+				return;
+
 			// Reset d) ASSUMPTION: a new extreme beyond the origin moves the origin (the 2E, if any, has succeeded).
 			if (ResetOnNewExtreme && (c.IsLong ? High[0] > c.OriginPrice + halfTick : Low[0] < c.OriginPrice - halfTick))
 			{
-				c.F2Armed = false;
+				// tuning EC-12: the F2E watch only ends beyond the origin of the 2E's count, not beyond an origin
+				// that a key level reset moved after the 2E
+				if (!F2EWatchUntil2EOrigin || (c.IsLong ? High[0] > c.F2OriginPrice + halfTick : Low[0] < c.F2OriginPrice - halfTick))
+					c.F2Armed = false;
 				ResetCount(c, EntryCountResetReason.NewExtreme, c.IsLong ? High[0] : Low[0], CurrentBar);
 			}
 
@@ -1290,7 +1317,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 		{
 			// ASSUMPTION: CounterTrendOnly resets only the count against the EMA trend
 			// (uptrend: short count), which makes a) and c) identical. Flat EMA: no reset. Both: both counts.
-			if (!ResetOnKeyLevel || !keyContact)
+			if (!ResetOnKeyLevel || !keyContact || c.Paused)     // tuning EC-11/EC-13: not while paused
 				return;
 
 			bool applies = ResetScope == EntryCountResetScope.Both
@@ -1326,7 +1353,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 				c.InLeg = false;
 
 			if (!meaningful)
+			{
+				if (reason != EntryCountResetReason.TwoLegs)
+					PauseNewCountBeyondEma(c);      // tuning EC-13 (after an F2E: StartPause)
 				return;
+			}
 
 			Series<int> reasonSeries = c.IsLong ? longResetReason : shortResetReason;
 			if (reasonSeries[0] == 0)
@@ -1344,7 +1375,76 @@ namespace NinjaTrader.NinjaScript.Indicators
 			if (diag != null)
 				LogEvent("Reset", c.IsLong, countBefore, currentSnap, false,
 					string.Format(CultureInfo.InvariantCulture, "{0}; new origin {1} @bar {2}", reason, originPrice, barNumbering.Get(originBar)));
+			if (reason != EntryCountResetReason.TwoLegs)
+				PauseNewCountBeyondEma(c);          // tuning EC-13 (after an F2E: StartPause)
 		}
+
+		#region Tuning EC-11 / EC-13 (CHANGELOG_Tuning.md Nr. 1, 7)
+
+		/// <summary>
+		/// After an F2E the count of that direction pauses until a bar closes on its side of the EMA (EndPause):
+		/// EC-11 after an F2E against the EMA trend (F2ES in an uptrend, F2EL in a downtrend),
+		/// EC-13 after an F2E closing beyond the EMA (F2ES above it, F2EL below it).
+		/// </summary>
+		private void StartPause(CountState c)
+		{
+			if (c.Paused)
+				return;
+			string lsl = c.IsLong ? "L" : "S";
+			if (PauseCountAfterCounterTrendF2E && currentTrend == (c.IsLong ? -1 : 1))
+				Pause(c, "F2E" + lsl + " against the " + (c.IsLong ? "downtrend" : "uptrend"));
+			else if (CountOnlyFromEmaSide && BeyondEma(c))
+				Pause(c, "F2E" + lsl + " with close " + (c.IsLong ? "below" : "above") + " the EMA");
+		}
+
+		private void Pause(CountState c, string why)
+		{
+			c.Paused  = true;
+			c.InLeg   = false;
+			c.F2Armed = false;
+			if (diag != null)
+				LogEvent("CountPaused", c.IsLong, 0, currentSnap, false,
+					why + ": " + (c.IsLong ? "long" : "short") + " count paused until a close " + (c.IsLong ? "above" : "below") + " the EMA");
+		}
+
+		/// <summary>First close on its side of the EMA ends the pause: the count restarts like on the first bar (origin = this bar).</summary>
+		private void EndPause(CountState c)
+		{
+			if (!c.Paused)
+				return;
+			double ema0 = ema[0];
+			if (!(c.IsLong ? Close[0] > ema0 : Close[0] < ema0))
+				return;
+			c.Paused      = false;
+			c.Count       = 0;
+			c.InLeg       = false;
+			c.HasPrevLeg  = false;
+			c.OriginPrice = c.IsLong ? High[0] : Low[0];
+			c.OriginBar   = CurrentBar;
+			if (diag != null)
+				LogEvent("CountResumed", c.IsLong, 0, currentSnap, false, string.Format(CultureInfo.InvariantCulture,
+					"close {0} {1} EMA {2}; new origin {3} @bar {4}", Close[0], c.IsLong ? "above" : "below", Math.Round(ema0, 4), c.OriginPrice, currentBarNo));
+		}
+
+		/// <summary>EC-13: the current bar closes on the wrong side of the EMA for this direction (short: above, long: below).</summary>
+		private bool BeyondEma(CountState c)
+		{
+			return c.IsLong ? Close[0] < ema[0] : Close[0] > ema[0];
+		}
+
+		/// <summary>
+		/// EC-13: a count only starts on its side of the EMA. A count that would start from 0 on a bar closing beyond
+		/// the EMA (first bar, reset d/a/c) pauses until a close back on its side (EndPause). A running count is not
+		/// affected; it goes on through the EMA to its F2E (StartPause).
+		/// </summary>
+		private void PauseNewCountBeyondEma(CountState c)
+		{
+			if (!CountOnlyFromEmaSide || c.Paused || !BeyondEma(c))
+				return;
+			Pause(c, "count would start with close " + (c.IsLong ? "below" : "above") + " the EMA");
+		}
+
+		#endregion
 
 		private static string ResetShortText(EntryCountResetReason reason)
 		{
@@ -1761,6 +1861,15 @@ namespace NinjaTrader.NinjaScript.Indicators
 		[NinjaScriptProperty]
 		[Display(Name = "Inside bar as signal bar", Description = "An inside bar during a leg becomes the signal bar; a later bar breaking its high (long) / low (short) by 1 tick triggers the entry. Inside bars are still skipped for leg detection and are never triggers.", Order = 7, GroupName = "4. Counting / reset")]
 		public bool InsideBarAsSignal { get; set; }
+
+		[Display(Name = "Pause counter-trend count after F2E (EC-11)", Description = "Tuning EC-11: an F2ES in an uptrend pauses the short count until a close below the EMA (F2EL in a downtrend: long count until a close above the EMA). Replaced by EC-13.", Order = 8, GroupName = "4. Counting / reset")]
+		public bool PauseCountAfterCounterTrendF2E { get; set; }
+
+		[Display(Name = "F2E watch until 2E origin (EC-12)", Description = "Tuning EC-12: a new extreme (reset d) ends the F2E watch only beyond the origin of the count the 2E came from, not beyond an origin a key level reset moved after the 2E.", Order = 9, GroupName = "4. Counting / reset")]
+		public bool F2EWatchUntil2EOrigin { get; set; }
+
+		[Display(Name = "Count only from EMA side (EC-13)", Description = "Tuning EC-13: a short count starts only with a close below the EMA (long: above). A short count that started below the EMA runs on above it until its F2ES; an F2ES closing above the EMA pauses it until a close below the EMA (long mirrored).", Order = 10, GroupName = "4. Counting / reset")]
+		public bool CountOnlyFromEmaSide { get; set; }
 
 		// 5. Display
 		[NinjaScriptProperty]

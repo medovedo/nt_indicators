@@ -60,6 +60,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 			// Last 1E reported by EntryCount (needed for condition 3 and weak criterion d).
 			public double FirstSignalExt = double.NaN;
 			public int FirstTriggerBar = -1;
+			public double FirstStop = double.NaN;      // tuning DT-b: structural stop of that 1E
+			public double SeqFirstStop = double.NaN;   // tuning DT-b: 1E stop of the running sequence
+			public double SecondStop;                  // tuning DT-b: structural stop of the 2E
 			public int LastSeenSecondBar = -1;
 
 			// Sequence 2E -> F2E -> signal bar
@@ -176,6 +179,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 				DtEmaToleranceTicks         = 2;
 				DtMaxBarsAfterF2E           = 10;
 				DtAllowF2EBarAsSignal       = true;
+				DtSignalBarIsCorrectionExtreme = false;     // tuning DT-a (CHANGELOG Nr. 3)
+				DtRequireEntryStopsHit      = false;        // tuning DT-b (CHANGELOG Nr. 4)
 				BlockTooLarge               = false;
 
 				// Weak 2E
@@ -244,6 +249,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 					StopMode, RiskTemplateTicks, RiskToleranceTicks, MaxPullbackPct,
 					RequireEqualOrHigherLeg, ResetOnKeyLevel, ResetScope, ResetAfterTwoLegs, ResetOnNewExtreme, FailedEntryMode, InsideBarAsSignal,
 					false);
+				// The hosted EntryCount keeps the original counting: its tuning options (EC-11/12/13) are EntryCount-only.
+				ec.PauseCountAfterCounterTrendF2E = false;
+				ec.F2EWatchUntil2EOrigin = false;
+				ec.CountOnlyFromEmaSide = false;
 
 				barNumbering = new DayBarNumbering();
 				longSide  = new DtSide { IsLong = true };
@@ -394,6 +403,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 			{
 				s.FirstSignalExt  = isLong ? ec.LongSignalLow[0] : ec.ShortSignalHigh[0];
 				s.FirstTriggerBar = CurrentBar;
+				s.FirstStop       = isLong ? ec.LongStop[0] : ec.ShortStop[0];     // tuning DT-b
 			}
 
 			// Pending signal from an earlier bar: entry triggered, or cancelled by a new correction extreme.
@@ -496,6 +506,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 			// The 1E of the same count must lie between the pullback start and this 2E.
 			s.SeqFirstExt = s.FirstTriggerBar > s.PullStartBar && s.FirstTriggerBar < CurrentBar ? s.FirstSignalExt : double.NaN;
+			s.SeqFirstStop = s.FirstTriggerBar > s.PullStartBar && s.FirstTriggerBar < CurrentBar ? s.FirstStop : double.NaN;   // tuning DT-b
+			s.SecondStop   = isLong ? ec.LongStop[0] : ec.ShortStop[0];                                                           // tuning DT-b
 
 			s.CorrExt               = isLong ? Low[0] : High[0];
 			s.CorrExtBar            = CurrentBar;
@@ -615,6 +627,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 			LogDt("DtRejected", s.IsLong, 3, ema0, null, double.NaN, double.NaN, 0, EntryCountRiskClass.None, reason);
 		}
 
+		/// <summary>Tuning DT-b: a stop is hit when price trades at it (long stop below: low &lt;= stop).</summary>
+		private bool StopHit(bool isLong, double extreme, double stop)
+		{
+			return isLong ? extreme <= stop + halfTick * 0.5 : extreme >= stop - halfTick * 0.5;
+		}
+
 		private void EvaluateCandidate(DtSide s, double ema0, int trend, bool inside)
 		{
 			bool isLong = s.IsLong;
@@ -642,10 +660,34 @@ namespace NinjaTrader.NinjaScript.Indicators
 			// Condition 3: new correction extreme beyond the 1E and 2E signal bars, and bar t belongs to that leg
 			if (reason == null)
 			{
-				if (!double.IsNaN(s.SeqFirstExt) && !(isLong ? s.CorrExt < s.SeqFirstExt - halfTick : s.CorrExt > s.SeqFirstExt + halfTick))
-					reason = string.Format(CultureInfo.InvariantCulture, "no new {0} beyond 1E{1} signal bar ({2})", isLong ? "low" : "high", isLong ? "L" : "S", s.SeqFirstExt);
+				string lsl = isLong ? "L" : "S";
+				string lowHigh = isLong ? "low" : "high";
+				if (DtRequireEntryStopsHit)
+				{
+					// tuning DT-b: the correction extreme must reach the structural stops of the 1E and the 2E
+					if (!double.IsNaN(s.SeqFirstStop) && !StopHit(isLong, s.CorrExt, s.SeqFirstStop))
+						reason = string.Format(CultureInfo.InvariantCulture, "no new {0} at/beyond the 1E{1} stop ({2})", lowHigh, lsl, s.SeqFirstStop);
+					else if (!StopHit(isLong, s.CorrExt, s.SecondStop))
+						reason = string.Format(CultureInfo.InvariantCulture, "no new {0} at/beyond the 2E{1} stop ({2})", lowHigh, lsl, s.SecondStop);
+				}
+				else if (!double.IsNaN(s.SeqFirstExt) && !(isLong ? s.CorrExt < s.SeqFirstExt - halfTick : s.CorrExt > s.SeqFirstExt + halfTick))
+					reason = string.Format(CultureInfo.InvariantCulture, "no new {0} beyond 1E{1} signal bar ({2})", lowHigh, lsl, s.SeqFirstExt);
 				else if (!(isLong ? s.CorrExt < s.SecondSigLow - halfTick : s.CorrExt > s.SecondSigHigh + halfTick))
-					reason = string.Format(CultureInfo.InvariantCulture, "no new {0} beyond 2E{1} signal bar", isLong ? "low" : "high", isLong ? "L" : "S");
+					reason = string.Format(CultureInfo.InvariantCulture, "no new {0} beyond 2E{1} signal bar", lowHigh, lsl);
+
+				if (reason != null)
+				{
+				}
+				else if (DtSignalBarIsCorrectionExtreme)
+				{
+					// tuning DT-a: the signal bar itself is the correction extreme (equal extreme counts)
+					if (!(isLong ? Low[0] <= s.CorrExt + halfTick : High[0] >= s.CorrExt - halfTick))
+						reason = string.Format(CultureInfo.InvariantCulture, "bar is not the correction {0} ({1} @bar {2})", lowHigh, s.CorrExt, barNumbering.Get(s.CorrExtBar));
+					else if (inside)
+						reason = "inside bar";
+					else
+						structureOk = true;
+				}
 				else if (s.CorrExtBar != CurrentBar && s.CounterBreakSinceCorr)
 					reason = "bar is not in the extreme leg of the correction";
 				else if (inside)
@@ -1102,6 +1144,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 		[Display(Name = "Allow F2E bar as signal bar", Description = "ASSUMPTION: the bar that triggers the F2E may itself be the DT signal bar (e.g. reversal bar).", Order = 3, GroupName = "05. Double Trap")]
 		public bool DtAllowF2EBarAsSignal { get; set; }
+
+		[Display(Name = "Signal bar is correction extreme (DT-a)", Description = "Tuning DT-a (Wade rule 5): the signal bar itself must be the low (long) / high (short) of the correction since the 2E trigger (equal extreme counts); replaces 'bar in the extreme leg'.", Order = 4, GroupName = "05. Double Trap")]
+		public bool DtSignalBarIsCorrectionExtreme { get; set; }
+
+		[Display(Name = "Require 1E/2E stops hit (DT-b)", Description = "Tuning DT-b (Wade rule 5): the correction extreme must reach the structural stops of the 1E (if part of the sequence) and the 2E, not only go beyond their signal bars.", Order = 5, GroupName = "05. Double Trap")]
+		public bool DtRequireEntryStopsHit { get; set; }
 
 		// 6. Weak 2E
 		[Display(Name = "Weak: EMA gap", Description = "a) 2E signal bar more than EMA gap ticks away from the EMA.", Order = 1, GroupName = "06. Weak 2E (DT expected)")]
