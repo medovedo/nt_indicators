@@ -168,12 +168,16 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 				// Hosted EntryCount counting
 				RequireEqualOrHigherLeg     = false;
-				ResetOnKeyLevel             = true;
+				ResetOnKeyLevel             = false;    // CHANGELOG Nr. 9: same counting as EntryCount
 				ResetScope                  = EntryCountResetScope.CounterTrendOnly;
 				ResetAfterTwoLegs           = true;
 				ResetOnNewExtreme           = true;
 				FailedEntryMode             = EntryCountFailedEntryMode.PriorBarBreak;
 				InsideBarAsSignal           = true;
+				PauseCountAfterCounterTrendF2E = false; // EC-11 (CHANGELOG Nr. 9: same counting as EntryCount)
+				F2EWatchUntil2EOrigin       = true;     // EC-12
+				CountOnlyFromEmaSide        = true;     // EC-13
+				ResetOnEqualExtreme         = true;     // EC-14
 
 				// Double Trap
 				DtEmaToleranceTicks         = 2;
@@ -249,11 +253,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 					StopMode, RiskTemplateTicks, RiskToleranceTicks, MaxPullbackPct,
 					RequireEqualOrHigherLeg, ResetOnKeyLevel, ResetScope, ResetAfterTwoLegs, ResetOnNewExtreme, FailedEntryMode, InsideBarAsSignal,
 					false);
-				// The hosted EntryCount keeps the original counting: its tuning options (EC-11/12/13) are EntryCount-only.
-				ec.PauseCountAfterCounterTrendF2E = false;
-				ec.F2EWatchUntil2EOrigin = false;
-				ec.CountOnlyFromEmaSide = false;
-				ec.ResetOnEqualExtreme = false;
+				// Tuning of the hosted EntryCount (not part of the generated EntryCount(...) method): same counting as EntryCount.
+				ec.PauseCountAfterCounterTrendF2E = PauseCountAfterCounterTrendF2E;
+				ec.F2EWatchUntil2EOrigin = F2EWatchUntil2EOrigin;
+				ec.CountOnlyFromEmaSide = CountOnlyFromEmaSide;
+				ec.ResetOnEqualExtreme = ResetOnEqualExtreme;
 
 				barNumbering = new DayBarNumbering();
 				longSide  = new DtSide { IsLong = true };
@@ -1133,6 +1137,18 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 		[Display(Name = "Inside bar as signal bar", Description = "EntryCount: an inside bar during a leg becomes the signal bar (never a trigger, still skipped for leg detection).", Order = 7, GroupName = "04. EntryCount (hosted)")]
 		public bool InsideBarAsSignal { get; set; }
+
+		[Display(Name = "Pause counter-trend count after F2E (EC-11)", Description = "EntryCount EC-11: an F2ES in an uptrend pauses the short count until a close below the EMA (mirror long). Replaced by EC-13.", Order = 8, GroupName = "04. EntryCount (hosted)")]
+		public bool PauseCountAfterCounterTrendF2E { get; set; }
+
+		[Display(Name = "F2E watch until 2E origin (EC-12)", Description = "EntryCount EC-12: a new extreme ends the F2E watch only beyond the origin of the count the 2E came from.", Order = 9, GroupName = "04. EntryCount (hosted)")]
+		public bool F2EWatchUntil2EOrigin { get; set; }
+
+		[Display(Name = "Count only from EMA side (EC-13)", Description = "EntryCount EC-13: a short count starts only with a close below the EMA (long: above); an F2E closing beyond the EMA pauses it until a close back on its side.", Order = 10, GroupName = "04. EntryCount (hosted)")]
+		public bool CountOnlyFromEmaSide { get; set; }
+
+		[Display(Name = "Reset on equal extreme (EC-14)", Description = "EntryCount EC-14: reset d also when a bar reaches the count origin exactly (double top/bottom).", Order = 11, GroupName = "04. EntryCount (hosted)")]
+		public bool ResetOnEqualExtreme { get; set; }
 
 		// 5. Double Trap
 		[Range(0, int.MaxValue)]
