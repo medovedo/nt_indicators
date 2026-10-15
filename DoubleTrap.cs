@@ -253,6 +253,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 				ec.PauseCountAfterCounterTrendF2E = false;
 				ec.F2EWatchUntil2EOrigin = false;
 				ec.CountOnlyFromEmaSide = false;
+				ec.ResetOnEqualExtreme = false;
 
 				barNumbering = new DayBarNumbering();
 				longSide  = new DtSide { IsLong = true };

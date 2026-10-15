@@ -716,6 +716,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 				PauseCountAfterCounterTrendF2E = false; // EC-11, Nr. 1/2 (replaced by EC-13)
 				F2EWatchUntil2EOrigin       = true;     // EC-12, Nr. 5
 				CountOnlyFromEmaSide        = true;     // EC-13, Nr. 7
+				ResetOnEqualExtreme         = true;     // EC-14, Nr. 8
 
 				// Display
 				ShowLabels                  = true;
@@ -1280,11 +1281,15 @@ namespace NinjaTrader.NinjaScript.Indicators
 				return;
 
 			// Reset d) ASSUMPTION: a new extreme beyond the origin moves the origin (the 2E, if any, has succeeded).
-			if (ResetOnNewExtreme && (c.IsLong ? High[0] > c.OriginPrice + halfTick : Low[0] < c.OriginPrice - halfTick))
+			bool beyond = c.IsLong ? High[0] > c.OriginPrice + halfTick : Low[0] < c.OriginPrice - halfTick;
+			// tuning EC-14: a bar reaching the origin exactly (double top/bottom) resets the count as well
+			bool equal = ResetOnEqualExtreme && !beyond && c.OriginBar != CurrentBar
+				&& Math.Abs((c.IsLong ? High[0] : Low[0]) - c.OriginPrice) < halfTick;
+			if (ResetOnNewExtreme && (beyond || equal))
 			{
 				// tuning EC-12: the F2E watch only ends beyond the origin of the 2E's count, not beyond an origin
-				// that a key level reset moved after the 2E
-				if (!F2EWatchUntil2EOrigin || (c.IsLong ? High[0] > c.F2OriginPrice + halfTick : Low[0] < c.F2OriginPrice - halfTick))
+				// that a key level reset moved after the 2E (EC-14: an equal extreme never ends it)
+				if (beyond && (!F2EWatchUntil2EOrigin || (c.IsLong ? High[0] > c.F2OriginPrice + halfTick : Low[0] < c.F2OriginPrice - halfTick)))
 					c.F2Armed = false;
 				ResetCount(c, EntryCountResetReason.NewExtreme, c.IsLong ? High[0] : Low[0], CurrentBar);
 			}
@@ -1870,6 +1875,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 		[Display(Name = "Count only from EMA side (EC-13)", Description = "Tuning EC-13: a short count starts only with a close below the EMA (long: above). A short count that started below the EMA runs on above it until its F2ES; an F2ES closing above the EMA pauses it until a close below the EMA (long mirrored).", Order = 10, GroupName = "4. Counting / reset")]
 		public bool CountOnlyFromEmaSide { get; set; }
+
+		[Display(Name = "Reset on equal extreme (EC-14)", Description = "Tuning EC-14: reset d also when a bar reaches the origin exactly (double bottom for the short count, double top for the long count). The F2E watch still ends only on a real break.", Order = 11, GroupName = "4. Counting / reset")]
+		public bool ResetOnEqualExtreme { get; set; }
 
 		// 5. Display
 		[NinjaScriptProperty]
